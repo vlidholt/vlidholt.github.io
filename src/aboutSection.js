@@ -1,19 +1,23 @@
 /**
- * About section — Three.js scene rendering a full-figure 3-D model of Viktor.
+ * About section — Three.js scene with a turnaround sprite of Viktor plus
+ * orbiting 3-D props.
+ *
+ * Viktor is a horizontal sprite sheet (14 frames: side → front).  Scroll
+ * drives a virtual Y-rotation that selects the matching frame; the plane
+ * itself always faces the camera (no 3-D rotation of the mesh).
  *
  * The canvas is transparent (alpha: true) so the section's CSS gradient
- * background shows through wherever the model isn't.  No EffectComposer /
- * bloom — plain renderer.render() is enough here.
+ * background shows through.  No EffectComposer / bloom.
  *
- * Layout: model fills the left column; text content lives in the right column
- * as plain HTML, so this module only concerns itself with the canvas.
+ * Layout: sprite on the right; text content lives in the left column as
+ * plain HTML, so this module only concerns itself with the canvas.
  */
 
 import * as THREE from 'three';
 import { GLTFLoader }     from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 
-import viktorUrl          from '../assets/3d/viktor.glb?url';
+import viktorSpriteUrl    from '../assets/3d/vik-rotating.webp';
 import mugRedUrl          from '../assets/3d/mug-red.glb?url';
 import coinUrl            from '../assets/3d/coin.glb?url';
 import dashUrl            from '../assets/3d/dash.glb?url';
@@ -27,6 +31,14 @@ import rubikUrl           from '../assets/3d/rubik-license.glb?url';
 import diceUrl            from '../assets/3d/dice-license.glb?url';
 
 const ORBIT_SIZE = 0.26; // target bounding-box max dimension (world units)
+
+// Sprite sheet: 14 frames × 240×640 px, left = side, right = front
+const FRAME_COUNT = 14;
+const FRAME_W     = 240;
+const FRAME_H     = 640;
+// Virtual angles that map onto the sheet ends (same space as the old GLB rotY)
+const ANGLE_SIDE  = -Math.PI / 2; // full profile → frame 0
+const ANGLE_FRONT = 0;            // facing camera → frame 13
 
 // Unique models to preload
 const ORBIT_URLS = [mugRedUrl, coinUrl, dashUrl, spaceshipPinkUrl, spaceshipYellowUrl, houseplantUrl, diceUrl, flowerPotUrl, gameboyUrl, crystalUrl, rubikUrl];
@@ -46,8 +58,8 @@ const RING2 = {
   baseSpeed: 0.00022, // rad/ms  ≈ 28.6 s / orbit (slower, feels more stately)
 };
 
-// Negative Y = faces left (inward, toward the text column on the left)
-const REST_ROT_Y = -0.68;
+// Default pose = front of sheet (last frame). Scroll drives toward side.
+const REST_ROT_Y = ANGLE_FRONT;
 
 export function initAbout(sectionEl, scrollContainer) {
   const canvas = sectionEl.querySelector('#about-canvas');
@@ -107,8 +119,8 @@ export function initAbout(sectionEl, scrollContainer) {
   blobCanvas.width = blobCanvas.height = 256;
   const blobCtx = blobCanvas.getContext('2d');
   const grad = blobCtx.createRadialGradient(128, 128, 0, 128, 128, 128);
-  grad.addColorStop(0,    'rgba(0,0,0,0.55)');
-  grad.addColorStop(0.45, 'rgba(0,0,0,0.20)');
+  grad.addColorStop(0,    'rgba(0,0,0,0.85)');
+  grad.addColorStop(0.40, 'rgba(0,0,0,0.40)');
   grad.addColorStop(1,    'rgba(0,0,0,0)');
   blobCtx.fillStyle = grad;
   blobCtx.fillRect(0, 0, 256, 256);
@@ -120,112 +132,96 @@ export function initAbout(sectionEl, scrollContainer) {
   );
   shadowPlane.rotation.x = -Math.PI / 2;
   // Scale to an ellipse: wide in X (left/right), narrow in Z (depth)
-  shadowPlane.scale.set(1.4, 1, 0.45);
+  shadowPlane.scale.set(1.9, 1, 0.65);
   scene.add(shadowPlane);
 
   // ── State ─────────────────────────────────────────────────────────
-  let viktorGroup  = null;
+  let viktorMesh   = null;
+  let spriteTex    = null;
   let modelReady   = false;
   let targetRotY   = REST_ROT_Y;
   let currentRotY  = REST_ROT_Y;
   let lastTime     = 0;
 
-  // Orbit center tracks Viktor's world position (set once model + camera are fitted)
+  // Orbit center tracks Viktor's world position (set once sprite + camera are fitted)
   const orbitCenter = new THREE.Vector3(0, 0, 0);
 
   // Each entry: { group, angle, speed, radius, tilt, spinSpeed }
   const orbitObjects = [];
 
-  // ── KHR_materials_pbrSpecularGlossiness plugin ────────────────────
-  const loader = new GLTFLoader();
-  loader.setMeshoptDecoder(MeshoptDecoder);
+  /** Map a virtual Y-rotation onto a sprite-sheet frame (0 = side … 13 = front). */
+  function angleToFrame(angle) {
+    const t = (angle - ANGLE_SIDE) / (ANGLE_FRONT - ANGLE_SIDE);
+    return Math.round(clamp01(t) * (FRAME_COUNT - 1));
+  }
 
-  loader.register((parser) => ({
-    name: 'KHR_materials_pbrSpecularGlossiness',
+  function clamp01(v) {
+    return Math.max(0, Math.min(1, v));
+  }
 
-    getMaterialType(materialIndex) {
-      const matDef = parser.json.materials?.[materialIndex];
-      if (!matDef?.extensions?.KHR_materials_pbrSpecularGlossiness) return null;
-      return THREE.MeshStandardMaterial;
-    },
+  function setSpriteFrame(frame) {
+    if (!spriteTex) return;
+    spriteTex.offset.x = frame / FRAME_COUNT;
+  }
 
-    extendMaterialParams(materialIndex, materialParams) {
-      const matDef = parser.json.materials?.[materialIndex];
-      const ext    = matDef?.extensions?.KHR_materials_pbrSpecularGlossiness;
-      if (!ext) return Promise.resolve();
-      if (ext.diffuseFactor) {
-        const [r, g, b, a] = ext.diffuseFactor;
-        materialParams.color = new THREE.Color().setRGB(r, g, b);
-        if (a !== undefined && a < 1) materialParams.opacity = a;
-      }
-      materialParams.roughness = ext.glossinessFactor !== undefined
-        ? 1 - ext.glossinessFactor : 0.6;
-      materialParams.metalness = 0;
-      return Promise.resolve();
-    },
-  }));
+  // ── Load turnaround sprite ────────────────────────────────────────
+  new THREE.TextureLoader().load(
+    viktorSpriteUrl,
+    (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.magFilter  = THREE.LinearFilter;
+      tex.minFilter  = THREE.LinearFilter;
+      tex.generateMipmaps = false;
+      // Show one frame: crop to 1/14 of the sheet width
+      tex.repeat.set(1 / FRAME_COUNT, 1);
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      spriteTex = tex;
 
-  // ── Load model ────────────────────────────────────────────────────
-  loader.load(
-    viktorUrl,
-    (gltf) => {
-      viktorGroup = gltf.scene;
+      const TARGET_HEIGHT = 2.81;
+      const aspect = FRAME_W / FRAME_H; // 240 / 640
+      const planeW = TARGET_HEIGHT * aspect;
+      const planeH = TARGET_HEIGHT;
 
-      // Force matrix update before measuring (needed for skinned meshes)
-      viktorGroup.updateMatrixWorld(true);
+      const mat = new THREE.MeshBasicMaterial({
+        map: tex,
+        transparent: true,
+        alphaTest: 0.35, // discard soft fringe; still write depth so orbit props pass behind
+        depthWrite: true,
+        side: THREE.FrontSide,
+      });
+      viktorMesh = new THREE.Mesh(new THREE.PlaneGeometry(planeW, planeH), mat);
+      // Plane faces +Z (camera) — never rotate in Y; frames carry the turnaround
 
-      const rawBox  = new THREE.Box3().setFromObject(viktorGroup);
-      const rawSize = rawBox.getSize(new THREE.Vector3());
-      if (rawSize.y === 0) {
-        console.warn('[about] bounding box height is 0 — model may have no geometry');
-      }
-
-      const TARGET_HEIGHT = 2.81;   // 2.16 × 1.3 — 30% larger
-      const scale = rawSize.y > 0 ? TARGET_HEIGHT / rawSize.y : 1;
-      viktorGroup.scale.setScalar(scale);
-      viktorGroup.updateMatrixWorld(true);
-
-      // Centre on origin
-      const box    = new THREE.Box3().setFromObject(viktorGroup);
-      const center = box.getCenter(new THREE.Vector3());
-      viktorGroup.position.sub(center);
-
-      // Fit camera so the full figure + padding is visible.
-      // Smaller multiplier = camera closer = model appears larger on screen.
-      // (Apparent height ∝ 1/multiplier; TARGET_HEIGHT alone has no effect.)
-      const size   = box.getSize(new THREE.Vector3());
+      const size   = { x: planeW, y: planeH };
       const fovRad = camera.fov * (Math.PI / 180);
       const fitZ   = (size.y / (2 * Math.tan(fovRad / 2))) * 1.28;
       camera.position.set(0, 0, fitZ);
       camera.near  = fitZ * 0.001;
       camera.far   = fitZ * 20;
-      // Use full-section aspect ratio now that canvas spans the whole section
       const { w: curW, h: curH } = sectionSize();
       camera.aspect = curW / curH;
       camera.updateProjectionMatrix();
-      // Shift Viktor: slightly right of centre, feet near the bottom.
-      // halfVisW = half the total visible width at z=0.
+
       const halfVisW = Math.tan(fovRad / 2) * fitZ * camera.aspect;
       const halfVisH = Math.tan(fovRad / 2) * fitZ;
       const xOffset  = halfVisW * 0.40; // a bit right of centre
       // Feet rest ~10 % of the visible height above the bottom edge
       const yOffset  = size.y / 2 - halfVisH * 0.90;
-      viktorGroup.position.x += xOffset;
-      viktorGroup.position.y += yOffset;
-      shadowPlane.position.x  = xOffset;
-      // Position blob shadow just at the model's feet
-      shadowPlane.position.y  = yOffset - size.y / 2 + 0.01;
-      // Orbit objects circle around Viktor's horizontal position, vertical centre
+      viktorMesh.position.set(xOffset, yOffset, 0);
+      shadowPlane.position.x = xOffset;
+      // ~15 px above the feet at the fitted camera scale (≈540 px section height)
+      shadowPlane.position.y = yOffset - size.y / 2 + 0.115;
       orbitCenter.set(xOffset, 0, 0);
 
-      viktorGroup.rotation.y = REST_ROT_Y;
       currentRotY = REST_ROT_Y;
+      setSpriteFrame(angleToFrame(REST_ROT_Y));
       onScroll();
-      scene.add(viktorGroup);
+      scene.add(viktorMesh);
       modelReady = true;
     },
     undefined,
-    (err) => console.error('[about] GLTFLoader error:', err),
+    (err) => console.error('[about] sprite load error:', err),
   );
 
   // ── Orbit props ───────────────────────────────────────────────────
@@ -420,9 +416,11 @@ export function initAbout(sectionEl, scrollContainer) {
       rimCool.color.setHSL(0.62 + cycle * 0.06, 0.85, 0.65);
       rimWarm.color.setHSL(0.07 - cycle * 0.03, 0.90, 0.60);
 
-      if (modelReady && viktorGroup) {
+      if (modelReady && viktorMesh) {
+        // Virtual rotation drives frame selection only — no idle wobble.
+        // The plane stays camera-facing; each frame already encodes the angle.
         currentRotY += (targetRotY - currentRotY) * 0.055;
-        viktorGroup.rotation.y = currentRotY + Math.sin(time * 0.0008) * 0.08;
+        setSpriteFrame(angleToFrame(currentRotY));
       }
 
       // Orbit animation — advance angle, reposition, spin + sway

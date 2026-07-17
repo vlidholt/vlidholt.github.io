@@ -24,14 +24,14 @@ index.html          Main HTML — all sections live here
 src/
   main.js           Entry point: nav wiring, IntersectionObserver, animation loop
   style.css         All styles (reset → nav → per-section)
-  aboutSection.js   Three.js scene for the "Viktor" (About) section
+  aboutSection.js   Three.js scene for the "Viktor" (About) section — turnaround sprite + orbit props
   earlyGames.js     Three.js scene for the "Early Games" section
   education.js      Three.js scene for the "Education" section
   missileCommand.js Missile Command game logic & rendering (standalone class)
 assets/
   3d/macintosh.glb         Old Macintosh 3-D model (Early Games)
   3d/macintosh-2.glb       Macintosh 2 model (Education)
-  3d/viktor.glb            Full-figure Viktor model (About)
+  3d/vik-rotating.webp     14-frame turnaround sprite sheet (About; 240×640 per frame, side→front)
   background/kiddo.webp    Background photo for the Early Games section
   missile/background.png   Mac screen chrome (menu bar + rounded corners) for the game
 vite.config.js      Adds *.glb to assetsInclude
@@ -45,7 +45,7 @@ Single-page vertical scroll inside `#scroll-container` with `scroll-snap-type: y
 
 | Order | `id` | CSS class(es) | Notes |
 |-------|------|---------------|-------|
-| 1 | `about` | `section-about` | Three.js canvas (viktor.glb + orbiting objects); text left |
+| 1 | `about` | `section-about` | Three.js canvas (vik-rotating.webp sprite + orbiting objects); text left |
 | 2 | `early-games` | `section-early-games` | Three.js canvas (macintosh.glb + Missile Command game); text right |
 | 3 | `education` | `section-education` | Three.js canvas (macintosh-2.glb); text left |
 | 4 | `casual-games` | `section-placeholder section-casual` | Placeholder |
